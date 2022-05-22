@@ -1,0 +1,287 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+# Wine dataset 
+
+
+## Loading the data
+```{r}
+# Load the caret package
+library(caret)
+# Load data
+wine <- read.csv('WineQuality.csv')
+
+# Structure of the dataframe
+str(wine)
+
+# See top 6 rows and 10 columns
+head(wine)
+
+# Distribution of wine quality (predictable variable)
+
+summary(wine$quality)
+
+```
+## Looking at the range of the quality variable (to predict)
+```{r}
+# We can see that the quality of our wine ranges from 3 to 9, 
+# we plot the histogram of the distribution of this variable
+
+hist(wine$quality)
+```
+
+The qualities are mainly distributed between 5 and 7. Three classification approaches are proposed: 
+
+ * Cut the dataset into two for, bad wine (3-5) on one side and good wine (6-9) on the other.
+ * Split the dataset into 3 categories, bad wine (3-5), average wine (6) and good wine (6-9) based on the distribution of the variable "quality".
+ * Leave the dataset as it is.
+
+In all three cases, we will evaluate the performance of the models and justify the use of one model over the other in the conclusion.
+
+Note that there is a trade-off in simplifying the problem into a binary classification. On the one hand the classifier will be more efficient but on the other hand we lose the quality scale on wines. We can no longer tell the difference between different good wines and different bad wines.  
+
+On the other hand, the approach of dividing up the qualities of wine is more easily justifiable in view of the very centred distribution of the quality variable. 
+
+Finally, the approach is the most coherent if we want to respect the way the data are made. The main problem with this approach is the poor distribution of the data (very little data on very good quality wines). One could adopt methods of data generation but this would not be really consistent as the measurement of the quality of a wine on a scale of 0 to 10 is very subjective. 
+
+
+
+
+## Setting-up the workflow
+
+We will use the caret library in order to train, estimate the performance of our models and tune the severals hyperparameters of each models. We will divide our data into two sets with 80% training data and 20% test data respectively. We will use cross-validation to assess the performance of the models (their accuracy) during training. To obtain an unbiased result of the models' performance, we will use the test data. For the hyperparameter tuning part, we will simply use the tuneLength attribute in the trainControl class from Caret and give it a reasonable value. 
+
+Four models will be tested : 
+
+ * KNN
+ * Decision Tree (rpart in caret)
+ * LDA (Linear Discriminant analysis)
+ * Random Forest
+
+### Influence of the predictors on Quality
+
+Let's take a look at the influence of each predictors on the wine quality :
+
+```{r}
+featurePlot(x = wine[, 1:11], 
+            y = as.factor(wine$quality), 
+            plot = "box",
+            strip=strip.custom(par.strip.text=list(cex=.7)),
+            scales = list(x = list(relation="free"), 
+                          y = list(relation="free")))
+
+```
+It is not possible to draw conclusions about the influence of any particular variable on the quality of the wine. On the other hand, we can see that our variables are very asymmetrical, so we will carry out a normalisation of the data (scaling + centering) to remove the skewness.
+
+
+## First approach : binary classification
+
+We will solve a simple binary classification problem. We expect models to perform the best in that context. 
+
+```{r}
+# gathering up the 9 categories into 2
+data <- wine
+new_quality <- cut(wine$quality,c(0,6,10), include.lower=FALSE,labels=c(0,1))
+data$quality <- new_quality
+head(data)
+```
+
+We cannot draw any conclusion out these distributions, there is a slight difference between a good wine and a bad wine just in term of alcohol though. It means that each variable individually doesn't influence itself the quality variable. 
+
+### Splitting data into a train and test set
+
+
+```{r}
+trainRowNumbers <- createDataPartition(data$quality, p=0.8, list=FALSE)
+
+trainData <- data[trainRowNumbers,]
+
+testData <- data[-trainRowNumbers,]
+x = trainData[,1:11]
+y = trainData$quality
+
+```
+### Scaling data and training models 
+
+
+```{r}
+
+# splitting the dataset
+trainRowNumbers <- createDataPartition(data$quality, p=0.8, list=FALSE)
+
+trainData <- data[trainRowNumbers,]
+
+testData <- data[-trainRowNumbers,]
+x = trainData[,1:11]
+y = trainData$quality
+
+#scaling data 
+trCtrl <- trainControl(method="repeatedcv", number=5, repeats=5,savePredictions="final")
+preProcValues <- preProcess(trainData, method = c("center", "scale"))
+trainData_scaled <- predict(preProcValues,trainData)
+testData_scaled <- predict(preProcValues,testData)
+
+# list of methods
+methodList <- c("rf","rpart","lda","knn")
+
+# training all models
+
+ensemble.bin <- caretEnsemble::caretList(quality~., data=trainData_scaled,
+                      metric="Accuracy",
+                      tuneList = list(
+                        rf = caretEnsemble::caretModelSpec(method="rf", tuneLength = 5),
+                        rpart=caretEnsemble::caretModelSpec(method="rpart",tuneLength=10),
+                        lda = caretEnsemble::caretModelSpec(method="lda",tuneLength=10),
+                        knn = caretEnsemble::caretModelSpec(method="rf", tuneLength =50)
+                      ))
+```
+### Our models' performance
+
+The best performances are obtained with the Random Forest model. However, the KNN model has equivalent performance for a very small training time. 
+
+
+```{r}
+resampled.bin <- resamples(ensemble.bin)
+summary(resampled.bin)
+bwplot(resampled.bin)
+```
+#### Let's check the ROC curve for each models
+```{r}
+library(pROC)
+library(ggplot2)
+library(tidyverse)
+
+pred.rf <- predict(ensemble.bin$rf$finalModel, newdata=testData_scaled,type="prob")
+pred.knn <- predict(ensemble.bin$knn$finalModel, newdata=testData_scaled,type="prob")
+pred.rpart <- predict(ensemble.bin$rpart$finalModel, newdata=testData_scaled,type="prob")
+pred.lda <- predict(ensemble.bin$lda$finalModel, newdata=testData_scaled[1:11],type="prob")
+
+roc.list <- roc(testData_scaled$quality ~ pred.rf[,2] + pred.knn[,2] +pred.lda$posterior[,2] + pred.rpart[,2])
+ggroc(roc.list)
+# proc.rf <- roc(testData_scaled$quality,pred.rf[,2],
+#             smoothed = TRUE)
+#             # arguments for plo)
+# 
+# proc.knn <- roc(testData_scaled$quality,pred.knn[,2],
+#             smoothed = TRUE, show.thres=TRUE)
+# proc.rpart <- roc(testData_scaled$quality,pred.rpart[,2],
+#             smoothed = TRUE)
+#             # arguments for plot)
+# proc.lda <- roc(testData_scaled$quality,pred.lda$posterior[,2],
+#             smoothed = TRUE,
+#             # arguments for plot
+#             plot=TRUE)
+
+# plot.roc(proc.rf, col="goldenrod",legend=c("Random Forest"), lwd=2, print.auc=TRUE, add=TRUE, print.auc.y=40)
+# plot(proc.knn, add=TRUE,col='orange',legend=c("KNN"))
+#   
+# plot(proc.lda, add=TRUE,col='red',legend=c("LDA"))
+# plot(proc.rpart, add=TRUE,col='green',legend=c("Decision Tree"))
+# 
+# legend("topleft",c("Random Forest","KNN","LDA","Decision Tree"), fill = c("goldenrod","orange","red","green"))
+
+```
+
+
+## Second Approach : multiclass classification
+
+In this part, we are going to arbitrarily to divide the quality taste into 3 categories : low, medium and good (resp. 0,1,2). We are going to apply the same approach as the binary classification.
+
+```{r}
+data <- wine
+new_quality <- cut(wine$quality,c(0,5,6,9), include.lower=TRUE,labels=c(0,1,2))
+data$quality <- new_quality
+head(data)
+```
+
+### Train and validation
+
+We will see how well these models performs in the validation process and draw the conclusion
+
+```{r}
+
+# splitting the dataset
+trainRowNumbers <- createDataPartition(data$quality, p=0.8, list=FALSE)
+
+trainData <- data[trainRowNumbers,]
+
+testData <- data[-trainRowNumbers,]
+x = trainData[,1:11]
+y = trainData$quality
+
+#scaling data 
+trCtrl <- trainControl(method="repeatedcv", number=5, repeats=5,savePredictions="final")
+preProcValues <- preProcess(trainData, method = c("center", "scale"))
+trainData_scaled <- predict(preProcValues,trainData)
+testData_scaled <- predict(preProcValues,testData)
+
+# list of methods
+methodList <- c("rf","rpart","lda","knn")
+
+# training all models
+
+ensemble <- caretEnsemble::caretList(quality~., data=trainData_scaled,
+                      metric="Accuracy",
+                      tuneList = list(
+                        rf = caretEnsemble::caretModelSpec(method="rf", tuneLength = 10),
+                        rpart=caretEnsemble::caretModelSpec(method="rpart",tuneLength=10),
+                        lda = caretEnsemble::caretModelSpec(method="lda",tuneLength=10),
+                        knn = caretEnsemble::caretModelSpec(method="rf", tuneLength =50)
+                      ))
+```
+```{r}
+resampled <- resamples(ensemble)
+summary(resampled)
+bwplot(resampled)
+```
+
+
+
+## Third Approach : using the whole range of the quality variable 
+
+```{r}
+data2 <- wine 
+# splitting the dataset
+trainRowNumbers <- createDataPartition(data2$quality, p=0.8, list=FALSE)
+
+trainData <- data2[trainRowNumbers,]
+trainData$quality <- as.factor(trainData$quality )
+testData <- data2[-trainRowNumbers,]
+
+
+#scaling data 
+trCtrl <- trainControl(method="repeatedcv", number=5, repeats=5,savePredictions="final")
+preProcValues <- preProcess(trainData, method = c("center", "scale"))
+trainData_scaled <- predict(preProcValues,trainData)
+testData_scaled <- predict(preProcValues,testData)
+
+# list of methods
+methodList <- c("rf","rpart","lda","knn")
+
+# training all models
+
+ensemble2 <- caretEnsemble::caretList(quality~., data=trainData_scaled,
+                      metric="Accuracy",
+                      tuneList = list(
+                        rf = caretEnsemble::caretModelSpec(method="rf", tuneLength = 10),
+                        rpart=caretEnsemble::caretModelSpec(method="rpart",tuneLength=10),
+                        lda = caretEnsemble::caretModelSpec(method="lda",tuneLength=10),
+                        knn = caretEnsemble::caretModelSpec(method="rf", tuneLength =50)
+                      ))
+
+```
+```{r}
+resampled2 <- resamples(ensemble2)
+summary(resampled2)
+bwplot(resampled2)
+```
+
+
+
+
+
+
+
